@@ -1,0 +1,77 @@
+name: Daily live QA
+# Daily 04:30 UTC (06:30 Israel in winter, 07:30 in summer): one hour after the 03:30 UTC maintenance cron.
+# Runs qa:live (scripts/qa/live-check.mjs, read-only, no secrets) from a vendored copy of akihub-trade (see vendor/README.md).
+# On failure it re-runs once 10 min later and alerts only if both runs fail.
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Test the alert path (points the check at a path that 404s, no wait; issue is labeled test)"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: daily-qa
+  cancel-in-progress: false
+jobs:
+  qa-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_FAIL: ${{ inputs.force_fail && 'true' || 'false' }}
+      TITLE: "ALERT: akihub-trade daily QA (qa:live) failing"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: qa:live (with one retry)
+        id: qa
+        working-directory: vendor/akihub-trade
+        run: |
+          base="https://akihub-trade.akihub.workers.dev"; waits="0 600"
+          if [ "$FORCE_FAIL" = "true" ]; then base="$base/__monitor_forced_test__"; waits="0 5"; fi
+          n=0
+          for w in $waits; do
+            sleep "$w"; n=$((n+1))
+            if node scripts/qa/live-check.mjs "$base" > out.txt 2>&1; then
+              cat out.txt; echo "ok=true" >> "$GITHUB_OUTPUT"; echo "attempts=$n" >> "$GITHUB_OUTPUT"
+              { echo '```'; cat out.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            echo "Attempt $n failed:"; cat out.txt
+          done
+          echo "ok=false" >> "$GITHUB_OUTPUT"; echo "attempts=$n" >> "$GITHUB_OUTPUT"
+          { echo '```'; cat out.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-check
+          path: vendor/akihub-trade/test-results/qa/
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Open or update alert
+        if: steps.qa.outputs.ok == 'false'
+        run: |
+          title="$TITLE"; label=""
+          if [ "$FORCE_FAIL" = "true" ]; then title="ALERT: TEST daily QA alert path"; label="test"; fi
+          {
+            echo "**qa:live failed ${{ steps.qa.outputs.attempts }} times in a row** ($(TZ=Asia/Jerusalem date '+%d.%m.%Y %H:%M') Israel time)."
+            echo
+            echo "Failed checks:"
+            echo '```'; grep -E '^(FAIL|WARN)' vendor/akihub-trade/out.txt || true; echo '```'
+            echo "<details><summary>Full output</summary>"; echo; echo '```'; cat vendor/akihub-trade/out.txt; echo '```'; echo "</details>"
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            [ "$FORCE_FAIL" = "true" ] && echo && echo "_This is a forced TEST of the alert path, not a real failure._"
+            true
+          } > body.md
+          ./scripts/alert.sh open "$title" body.md $label
+          [ "$FORCE_FAIL" = "true" ] || exit 1
+      - name: Close alert if recovered
+        if: steps.qa.outputs.ok == 'true'
+        run: ./scripts/alert.sh recover "$TITLE" "qa:live passes again ($(TZ=Asia/Jerusalem date '+%d.%m %H:%M') Israel time)."

@@ -1,0 +1,82 @@
+name: Weekly live load test
+# Mondays 01:15 UTC (03:15 Israel in winter, 04:15 in summer): a quiet hour, after the Sunday 01:00-04:50 UTC catalog sync window.
+# Runs qa:load:live (scripts/load/run.mjs --profile live: 20 VUs, 60 s, public pages only, read-only, capped by the script).
+# On failure (error rate > 1 %) it re-runs once 10 min later and alerts only if both fail.
+# Also re-enables this repo's workflows so GitHub never auto-disables the schedules after 60 quiet days.
+on:
+  schedule:
+    - cron: "15 1 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Test the alert path (points the load test at a path that 404s, 10 s, no wait; issue is labeled test)"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  issues: write
+  actions: write
+concurrency:
+  group: weekly-load
+  cancel-in-progress: false
+jobs:
+  load-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_FAIL: ${{ inputs.force_fail && 'true' || 'false' }}
+      TITLE: "ALERT: akihub-trade weekly load test failing"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Keep schedules alive
+        run: |
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows" --jq '.workflows[].id'); do
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/enable" >/dev/null && echo "enabled $id"
+          done
+      - name: qa:load:live (with one retry)
+        id: load
+        working-directory: vendor/akihub-trade
+        run: |
+          extra=""; waits="0 600"
+          if [ "$FORCE_FAIL" = "true" ]; then extra="--base https://akihub-trade.akihub.workers.dev/__monitor_forced_test__ --duration 10"; waits="0 5"; fi
+          n=0
+          for w in $waits; do
+            sleep "$w"; n=$((n+1))
+            if node scripts/load/run.mjs --profile live $extra > out.txt 2>&1; then
+              cat out.txt; echo "ok=true" >> "$GITHUB_OUTPUT"; echo "attempts=$n" >> "$GITHUB_OUTPUT"
+              f=$(ls -t test-results/load/*.md 2>/dev/null | head -n1); [ -n "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            echo "Attempt $n failed:"; cat out.txt
+          done
+          echo "ok=false" >> "$GITHUB_OUTPUT"; echo "attempts=$n" >> "$GITHUB_OUTPUT"
+          f=$(ls -t test-results/load/*.md 2>/dev/null | head -n1); [ -n "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-live
+          path: vendor/akihub-trade/test-results/load/
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Open or update alert
+        if: steps.load.outputs.ok == 'false'
+        run: |
+          title="$TITLE"; label=""
+          if [ "$FORCE_FAIL" = "true" ]; then title="ALERT: TEST weekly load alert path"; label="test"; fi
+          {
+            echo "**qa:load:live failed ${{ steps.load.outputs.attempts }} times in a row** ($(TZ=Asia/Jerusalem date '+%d.%m.%Y %H:%M') Israel time)."
+            echo
+            echo '```'; tail -n 40 vendor/akihub-trade/out.txt; echo '```'
+            echo
+            echo "Run (full report in the load-live artifact): $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            [ "$FORCE_FAIL" = "true" ] && echo && echo "_This is a forced TEST of the alert path, not a real failure._"
+            true
+          } > body.md
+          ./scripts/alert.sh open "$title" body.md $label
+          [ "$FORCE_FAIL" = "true" ] || exit 1
+      - name: Close alert if recovered
+        if: steps.load.outputs.ok == 'true'
+        run: ./scripts/alert.sh recover "$TITLE" "qa:load:live passes again ($(TZ=Asia/Jerusalem date '+%d.%m %H:%M') Israel time)."

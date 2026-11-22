@@ -1,0 +1,63 @@
+name: Uptime
+# Every 30 min (07 and 37 past the hour, UTC; GitHub may start scheduled runs a few minutes late).
+# Curl-only smoke check. On failure it re-checks at +5, +10 and +15 min and alerts only if ALL fail (15+ min down).
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Test the alert path (adds a URL that must fail, no waits; issue is labeled test)"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+jobs:
+  uptime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_FAIL: ${{ inputs.force_fail && 'true' || 'false' }}
+      TITLE: "ALERT: akihub-trade site down"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke check (with retries)
+        id: check
+        run: |
+          waits="0 300 300 300"; [ "$FORCE_FAIL" = "true" ] && waits="0 5"
+          n=0
+          for w in $waits; do
+            sleep "$w"; n=$((n+1))
+            if ./scripts/uptime.sh > result.md; then
+              echo "ok=true" >> "$GITHUB_OUTPUT"; echo "attempts=$n" >> "$GITHUB_OUTPUT"
+              cat result.md | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            echo "Attempt $n failed at $(date -u +%H:%MZ):"; cat result.md
+          done
+          echo "ok=false" >> "$GITHUB_OUTPUT"; echo "attempts=$n" >> "$GITHUB_OUTPUT"
+          cat result.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Open or update alert
+        if: steps.check.outputs.ok == 'false'
+        run: |
+          title="$TITLE"; label=""
+          if [ "$FORCE_FAIL" = "true" ]; then title="ALERT: TEST uptime alert path"; label="test"; fi
+          {
+            echo "**akihub-trade uptime check failed ${{ steps.check.outputs.attempts }} times in a row** (last at $(TZ=Asia/Jerusalem date '+%d.%m.%Y %H:%M') Israel time)."
+            echo
+            cat result.md
+            echo
+            echo "Site: https://akihub-trade.akihub.workers.dev"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            [ "$FORCE_FAIL" = "true" ] && echo && echo "_This is a forced TEST of the alert path, not a real outage._"
+            true
+          } > body.md
+          ./scripts/alert.sh open "$title" body.md $label
+          [ "$FORCE_FAIL" = "true" ] || exit 1
+      - name: Close alert if recovered
+        if: steps.check.outputs.ok == 'true'
+        run: ./scripts/alert.sh recover "$TITLE" "all smoke URLs answer as expected again ($(TZ=Asia/Jerusalem date '+%d.%m %H:%M') Israel time)."
