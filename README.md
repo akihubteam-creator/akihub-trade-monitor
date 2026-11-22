@@ -5,7 +5,7 @@ No AI tokens, no secrets, no money. It never deploys, writes or signs in anywher
 
 | Workflow | Schedule (UTC) | Israel time (winter / summer) | What |
 |---|---|---|---|
-| `uptime.yml` | `7,37 * * * *` | every 30 min | curl: `/` 200, `/cards` 200, `/listings` 200, `/auth/login` 302/303, `/dev/login` 404. Re-checks at +5/+10/+15 min; alerts only if all fail (15+ min down). |
+| `uptime.yml` | `7,37 * * * *` | every 30 min | curl: `/` 200, `/cards` 200, `/listings` 200, `/auth/login` 302 to Shopify (a 303 to /login?error= counts as down), `/dev/login` 404. Re-checks at +5/+10/+15 min; alerts only if all fail (15+ min down). |
 | `daily-qa.yml` | `30 4 * * *` | 06:30 / 07:30 | `qa:live` (read-only live checks). One retry after 10 min; alerts if both fail. |
 | `weekly-load.yml` | `15 1 * * 1` | Mon 03:15 / 04:15 | `qa:load:live` (20 VUs, 60 s, public pages). One retry after 10 min. Also re-enables the schedules (GitHub disables them after 60 quiet days in public repos). |
 

@@ -23,7 +23,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       FORCE_FAIL: ${{ inputs.force_fail && 'true' || 'false' }}
-      TITLE: "ALERT: akihub-trade site down"
+      TITLE: "ALERT: akihub-trade site or login down"
     steps:
       - uses: actions/checkout@v4
       - name: Smoke check (with retries)
