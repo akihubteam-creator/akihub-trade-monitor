@@ -18,7 +18,7 @@ case "$action" in
       gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
       echo "Alert still open: #$num (commented)"
     else
-      gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$labels" --body-file "$body_file"
+      gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label "$labels" --assignee akihubteam-creator --body-file "$body_file"
     fi ;;
   recover)
     msg="$3"
